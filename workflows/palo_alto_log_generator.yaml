@@ -348,8 +348,8 @@ workflow:
       input:
         script: |-
           import { execution } from '@dynatrace-sdk/automation-utils';
+          import { logsClient } from '@dynatrace-sdk/client-classic-environment-v2';
 
-          const LOG_INGEST_PATH = '/api/v2/logs/ingest';
           const BATCH_SIZE = 20;
 
           export default async function ({ execution_id }) {
@@ -390,31 +390,38 @@ workflow:
               });
             }
 
-            // Send in batches to respect API payload limits
+            // Send in batches using the Dynatrace SDK logsClient.
+            // The SDK handles authentication and correct API routing
+            // within the Dynatrace platform automatically.
             let ingested = 0;
+            const errors = [];
             for (let i = 0; i < logEntries.length; i += BATCH_SIZE) {
               const batch = logEntries.slice(i, i + BATCH_SIZE);
-              const response = await fetch(LOG_INGEST_PATH, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json; charset=utf-8' },
-                body: JSON.stringify(batch),
-              });
-
-              if (!response.ok) {
-                const body = await response.text();
-                console.error(`Batch ${Math.floor(i/BATCH_SIZE)+1} failed: ${response.status} - ${body}`);
-              } else {
+              try {
+                await logsClient.storeLog({
+                  type: 'application/json; charset=utf-8',
+                  body: batch,
+                });
                 ingested += batch.length;
+                console.log(`Batch ${Math.floor(i/BATCH_SIZE)+1}: ingested ${batch.length} entries.`);
+              } catch (e) {
+                const msg = `Batch ${Math.floor(i/BATCH_SIZE)+1} failed: ${e.message}`;
+                console.error(msg);
+                errors.push(msg);
               }
             }
 
             console.log(`Ingested ${ingested}/${logEntries.length} log entries into Grail.`);
+            if (errors.length > 0) {
+              console.error(`${errors.length} batch(es) failed. Check errors above.`);
+            }
 
             return {
               totalIngested: ingested,
               totalAttempted: logEntries.length,
               allowedIngested: summary.allowed,
               blockedIngested: summary.blocked,
+              errors: errors,
             };
           }
       position:
