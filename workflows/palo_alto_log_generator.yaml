@@ -1,0 +1,462 @@
+metadata:
+  version: "1"
+  dependencies:
+    apps:
+      - id: dynatrace.automations
+        version: ^1.840.0
+  inputs: []
+
+workflow:
+  title: "Palo Alto Firewall Log Generator"
+  description: >
+    Generates sample Palo Alto Networks PAN-OS traffic log entries in CSV syslog
+    format. Produces a realistic mix of ALLOW and DENY/DROP/RESET actions across
+    multiple source/destination pairs, ports, and applications so that downstream
+    analytics can validate whether traffic is being blocked by the firewall.
+    Approximately 60% of generated entries are allowed and 40% are blocked to
+    simulate a realistic partial-block scenario.
+
+  tasks:
+    generate_palo_alto_logs:
+      name: generate_palo_alto_logs
+      description: >
+        Runs a JavaScript action that builds sample Palo Alto PAN-OS 10.x
+        traffic log lines in standard CSV syslog format and returns them as
+        both a single multi-line string and a structured array.
+      action: dynatrace.automations:run-javascript
+      input:
+        script: |-
+          import { execution } from '@dynatrace-sdk/automation-utils';
+
+          export default async function ({ execution_id }) {
+
+            // ---------------------------------------------------------------
+            // Configuration – adjust these knobs to change the generated data
+            // ---------------------------------------------------------------
+            const LOG_COUNT           = 50;   // total log lines to generate
+            const BLOCK_RATIO         = 0.40; // ~40 % of traffic will be blocked
+            const SERIAL_NUMBER       = '001801000001';
+            const DEVICE_NAME         = 'PA-5260-LAB';
+            const VSYS                = 'vsys1';
+            const FIREWALL_VERSION    = '10.1.0';
+
+            // Realistic network segments
+            const INTERNAL_SUBNETS = [
+              { net: '10.0.1',   zone: 'trust',      tag: 'Workstations' },
+              { net: '10.0.2',   zone: 'trust',      tag: 'Servers' },
+              { net: '10.0.10',  zone: 'dmz',        tag: 'DMZ-Servers' },
+              { net: '172.16.5', zone: 'trust',      tag: 'VPN-Users' },
+            ];
+
+            const EXTERNAL_SUBNETS = [
+              { net: '203.0.113', zone: 'untrust', tag: 'External' },
+              { net: '198.51.100', zone: 'untrust', tag: 'External' },
+              { net: '192.0.2',   zone: 'untrust', tag: 'External' },
+            ];
+
+            // Application / port / protocol combos
+            const TRAFFIC_PROFILES = [
+              { app: 'web-browsing',  dport: 80,   proto: 6,  risk: 1 },
+              { app: 'ssl',           dport: 443,  proto: 6,  risk: 1 },
+              { app: 'dns',           dport: 53,   proto: 17, risk: 1 },
+              { app: 'ssh',           dport: 22,   proto: 6,  risk: 3 },
+              { app: 'ftp',           dport: 21,   proto: 6,  risk: 4 },
+              { app: 'smtp',          dport: 25,   proto: 6,  risk: 3 },
+              { app: 'ms-sql-server', dport: 1433, proto: 6,  risk: 4 },
+              { app: 'mysql',         dport: 3306, proto: 6,  risk: 4 },
+              { app: 'rdp',           dport: 3389, proto: 6,  risk: 5 },
+              { app: 'ntp',           dport: 123,  proto: 17, risk: 1 },
+              { app: 'syslog',        dport: 514,  proto: 17, risk: 2 },
+              { app: 'snmp',          dport: 161,  proto: 17, risk: 2 },
+              { app: 'unknown-tcp',   dport: 4444, proto: 6,  risk: 5 },
+              { app: 'unknown-tcp',   dport: 8080, proto: 6,  risk: 3 },
+              { app: 'ping',          dport: 0,    proto: 1,  risk: 1 },
+            ];
+
+            // Security rules that will appear in the logs
+            const ALLOW_RULES = [
+              'Allow-Outbound-Web',
+              'Allow-DNS',
+              'Allow-Internal-SSH',
+              'Allow-VPN-Access',
+              'Allow-NTP',
+              'Allow-DMZ-Inbound-HTTPS',
+            ];
+
+            const DENY_RULES = [
+              'Deny-Inbound-RDP',
+              'Deny-SQL-External',
+              'Deny-FTP-External',
+              'Block-Suspicious-Ports',
+              'Deny-All-Default',
+            ];
+
+            // ---------------------------------------------------------------
+            // Helpers
+            // ---------------------------------------------------------------
+            function randomInt(min, max) {
+              return Math.floor(Math.random() * (max - min + 1)) + min;
+            }
+
+            function pick(arr) {
+              return arr[randomInt(0, arr.length - 1)];
+            }
+
+            function randomIp(subnet) {
+              return `${subnet.net}.${randomInt(1, 254)}`;
+            }
+
+            function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+            function generateTimestamp(index) {
+              // Spread logs over the past hour
+              const now = new Date();
+              const offset = Math.floor((index / LOG_COUNT) * 3600 * 1000);
+              const ts = new Date(now.getTime() - 3600000 + offset);
+              return `${ts.getFullYear()}/${pad(ts.getMonth()+1)}/${pad(ts.getDate())} `
+                   + `${pad(ts.getHours())}:${pad(ts.getMinutes())}:${pad(ts.getSeconds())}`;
+            }
+
+            function generateSessionId() {
+              return randomInt(100000, 999999);
+            }
+
+            // ---------------------------------------------------------------
+            // Build a single PAN-OS 10.x traffic log line (CSV, ~70 fields)
+            // Reference: https://docs.paloaltonetworks.com/pan-os/10-1/
+            //   pan-os-admin/monitoring/use-syslog-for-monitoring/
+            //   syslog-field-descriptions/traffic-log-fields
+            // ---------------------------------------------------------------
+            function buildLogLine(index) {
+              const isBlocked = Math.random() < BLOCK_RATIO;
+              const profile   = pick(TRAFFIC_PROFILES);
+
+              // Higher-risk apps are more likely to be blocked
+              const effectiveBlock = isBlocked || profile.risk >= 5;
+
+              const action    = effectiveBlock
+                                  ? pick(['deny', 'drop', 'reset-both'])
+                                  : 'allow';
+              const rule      = effectiveBlock ? pick(DENY_RULES) : pick(ALLOW_RULES);
+
+              // Direction: blocked traffic is mostly inbound
+              let src, dst;
+              if (effectiveBlock && Math.random() < 0.7) {
+                src = pick(EXTERNAL_SUBNETS);
+                dst = pick(INTERNAL_SUBNETS);
+              } else {
+                src = pick(INTERNAL_SUBNETS);
+                dst = pick(EXTERNAL_SUBNETS);
+              }
+
+              const srcIp   = randomIp(src);
+              const dstIp   = randomIp(dst);
+              const srcPort = randomInt(1024, 65535);
+              const dstPort = profile.dport;
+              const proto   = profile.proto;
+
+              const bytes_sent = effectiveBlock ? 0 : randomInt(200, 500000);
+              const bytes_recv = effectiveBlock ? 0 : randomInt(200, 800000);
+              const pkts_sent  = effectiveBlock ? randomInt(1, 3) : randomInt(5, 2000);
+              const pkts_recv  = effectiveBlock ? 0 : randomInt(5, 3000);
+              const elapsed    = effectiveBlock ? 0 : randomInt(1, 300);
+
+              const sessionId = generateSessionId();
+              const ts        = generateTimestamp(index);
+              const repeatCnt = 1;
+
+              const sessionEnd = effectiveBlock
+                ? pick(['policy-deny', 'threat'])
+                : pick(['tcp-fin', 'tcp-rst-from-client', 'tcp-rst-from-server', 'aged-out']);
+
+              const category = effectiveBlock
+                ? pick(['malware', 'command-and-control', 'hacking', 'any'])
+                : pick(['general-internet', 'business-and-economy', 'computer-and-internet-info', 'any']);
+
+              // PAN-OS 10.x traffic log CSV field order (simplified but faithful)
+              // Fields are positional; unused fields are left empty or FUTURE_USE
+              const fields = [
+                /* 1  FUTURE_USE        */ '',
+                /* 2  receive_time       */ ts,
+                /* 3  serial             */ SERIAL_NUMBER,
+                /* 4  type               */ 'TRAFFIC',
+                /* 5  threat/content_type*/ 'end',
+                /* 6  FUTURE_USE         */ '',
+                /* 7  generated_time     */ ts,
+                /* 8  src                */ srcIp,
+                /* 9  dst                */ dstIp,
+                /* 10 natsrc             */ srcIp,
+                /* 11 natdst             */ dstIp,
+                /* 12 rule               */ rule,
+                /* 13 srcuser            */ src.tag === 'VPN-Users' ? 'vpn-user-' + randomInt(1,20) : '',
+                /* 14 dstuser            */ '',
+                /* 15 app                */ profile.app,
+                /* 16 vsys               */ VSYS,
+                /* 17 from               */ src.zone,
+                /* 18 to                 */ dst.zone,
+                /* 19 inbound_if         */ 'ethernet1/' + randomInt(1, 8),
+                /* 20 outbound_if        */ 'ethernet1/' + randomInt(1, 8),
+                /* 21 logset             */ 'default',
+                /* 22 FUTURE_USE         */ '',
+                /* 23 sessionid          */ sessionId,
+                /* 24 repeatcnt          */ repeatCnt,
+                /* 25 sport              */ srcPort,
+                /* 26 dport              */ dstPort,
+                /* 27 natsport           */ srcPort,
+                /* 28 natdport           */ dstPort,
+                /* 29 flags              */ '0x400000',
+                /* 30 proto              */ proto,
+                /* 31 action             */ action,
+                /* 32 bytes              */ bytes_sent + bytes_recv,
+                /* 33 bytes_sent         */ bytes_sent,
+                /* 34 bytes_received     */ bytes_recv,
+                /* 35 packets            */ pkts_sent + pkts_recv,
+                /* 36 start              */ ts,
+                /* 37 elapsed            */ elapsed,
+                /* 38 category           */ category,
+                /* 39 FUTURE_USE         */ '',
+                /* 40 seqno              */ randomInt(1000000, 9999999),
+                /* 41 actionflags        */ '0x8000000000000000',
+                /* 42 srcloc             */ src.zone === 'untrust' ? 'US' : '',
+                /* 43 dstloc             */ dst.zone === 'untrust' ? 'US' : '',
+                /* 44 FUTURE_USE         */ '',
+                /* 45 pkts_sent          */ pkts_sent,
+                /* 46 pkts_received      */ pkts_recv,
+                /* 47 session_end_reason */ sessionEnd,
+                /* 48 dg_hier_level_1    */ 1,
+                /* 49 dg_hier_level_2    */ 0,
+                /* 50 dg_hier_level_3    */ 0,
+                /* 51 dg_hier_level_4    */ 0,
+                /* 52 vsys_name          */ VSYS,
+                /* 53 device_name        */ DEVICE_NAME,
+                /* 54 action_source      */ 'from-policy',
+                /* 55 src_uuid           */ '',
+                /* 56 dst_uuid           */ '',
+                /* 57 tunnelid/imsi      */ 0,
+                /* 58 monitortag/imei    */ '',
+                /* 59 parent_session_id  */ 0,
+                /* 60 parent_start_time  */ '',
+                /* 61 tunnel             */ 0,
+                /* 62 assoc_id           */ 0,
+                /* 63 chunks             */ 0,
+                /* 64 chunks_sent        */ 0,
+                /* 65 chunks_received    */ 0,
+                /* 66 rule_uuid          */ 'aaaaaaaa-bbbb-cccc-dddd-' + rule.replace(/[^a-zA-Z0-9]/g,'').substring(0,12).padEnd(12,'0'),
+                /* 67 http2_connection   */ 0,
+                /* 68 link_change_count  */ 0,
+                /* 69 policy_id          */ randomInt(1, 200),
+                /* 70 link_switches      */ '',
+                /* 71 sdwan_cluster      */ '',
+                /* 72 sdwan_device_type  */ '',
+                /* 73 sdwan_cluster_type */ '',
+                /* 74 sdwan_site         */ '',
+                /* 75 dynusergroup_name  */ '',
+                /* 76 xff_addr           */ '',
+                /* 77 src_dvc_category   */ '',
+                /* 78 src_dvc_profile    */ '',
+                /* 79 src_dvc_model      */ '',
+                /* 80 src_dvc_vendor     */ '',
+                /* 81 src_dvc_os_family  */ '',
+                /* 82 src_dvc_os_version */ '',
+                /* 83 src_hostname       */ '',
+                /* 84 src_mac            */ '',
+                /* 85 dst_dvc_category   */ '',
+                /* 86 dst_dvc_profile    */ '',
+                /* 87 dst_dvc_model      */ '',
+                /* 88 dst_dvc_vendor     */ '',
+                /* 89 dst_dvc_os_family  */ '',
+                /* 90 dst_dvc_os_version */ '',
+                /* 91 dst_hostname       */ '',
+                /* 92 dst_mac            */ '',
+                /* 93 container_id       */ '',
+                /* 94 pod_namespace      */ '',
+                /* 95 pod_name           */ '',
+                /* 96 src_edl           */ '',
+                /* 97 dst_edl           */ '',
+                /* 98 hostid            */ '',
+                /* 99 serial_number     */ SERIAL_NUMBER,
+                /* 100 src_dag           */ '',
+                /* 101 dst_dag           */ '',
+                /* 102 session_owner     */ '',
+                /* 103 high_res_ts       */ ts,
+              ];
+
+              return fields.join(',');
+            }
+
+            // ---------------------------------------------------------------
+            // Generate all log lines
+            // ---------------------------------------------------------------
+            const logLines = [];
+            const summary  = { total: LOG_COUNT, allowed: 0, blocked: 0, byAction: {}, byApp: {} };
+
+            for (let i = 0; i < LOG_COUNT; i++) {
+              const line = buildLogLine(i);
+              logLines.push(line);
+
+              // Parse the action field (position 31, 0-indexed 30) for summary
+              const parts  = line.split(',');
+              const action = parts[30];
+              const app    = parts[14];
+
+              summary.byAction[action] = (summary.byAction[action] || 0) + 1;
+              summary.byApp[app]       = (summary.byApp[app] || 0) + 1;
+
+              if (action === 'allow') {
+                summary.allowed++;
+              } else {
+                summary.blocked++;
+              }
+            }
+
+            // Build the complete log file content with a header comment
+            const header = [
+              `# Palo Alto Networks PAN-OS Traffic Log - Sample Data`,
+              `# Device: ${DEVICE_NAME} (${SERIAL_NUMBER})`,
+              `# PAN-OS Version: ${FIREWALL_VERSION}`,
+              `# Generated by Dynatrace Workflow at ${new Date().toISOString()}`,
+              `# Total entries: ${LOG_COUNT} | Allowed: ${summary.allowed} | Blocked: ${summary.blocked}`,
+              `# Format: PAN-OS 10.x CSV syslog (traffic type)`,
+              `#`,
+            ].join('\n');
+
+            const logFileContent = header + '\n' + logLines.join('\n') + '\n';
+
+            console.log(`Generated ${LOG_COUNT} Palo Alto traffic log entries.`);
+            console.log(`  Allowed: ${summary.allowed} (${((summary.allowed/LOG_COUNT)*100).toFixed(1)}%)`);
+            console.log(`  Blocked: ${summary.blocked} (${((summary.blocked/LOG_COUNT)*100).toFixed(1)}%)`);
+            console.log(`  Actions: ${JSON.stringify(summary.byAction)}`);
+
+            return {
+              logFileContent: logFileContent,
+              logLines: logLines,
+              summary: summary,
+            };
+          }
+      position:
+        x: 0
+        y: 1
+      predecessors: []
+
+    analyze_blocked_traffic:
+      name: analyze_blocked_traffic
+      description: >
+        Parses the generated log lines and produces a breakdown of blocked
+        traffic by source, destination, application, and deny rule to help
+        validate that the expected traffic is being blocked.
+      action: dynatrace.automations:run-javascript
+      input:
+        script: |-
+          import { execution } from '@dynatrace-sdk/automation-utils';
+
+          export default async function ({ execution_id }) {
+            const ex = await execution();
+            const genResult = await ex.result('generate_palo_alto_logs');
+            const logLines  = genResult.logLines;
+
+            const blockedEntries = [];
+            const allowedEntries = [];
+
+            for (const line of logLines) {
+              if (line.startsWith('#')) continue;
+              const f = line.split(',');
+              if (f.length < 50) continue;
+
+              const entry = {
+                timestamp:   f[1],
+                src:         f[7],
+                dst:         f[8],
+                rule:        f[11],
+                app:         f[14],
+                fromZone:    f[16],
+                toZone:      f[17],
+                action:      f[30],
+                bytesSent:   parseInt(f[32]) || 0,
+                bytesRecv:   parseInt(f[33]) || 0,
+                sessionEnd:  f[46],
+                deviceName:  f[52],
+              };
+
+              if (entry.action === 'allow') {
+                allowedEntries.push(entry);
+              } else {
+                blockedEntries.push(entry);
+              }
+            }
+
+            // Aggregate blocked traffic by rule
+            const byRule = {};
+            for (const e of blockedEntries) {
+              if (!byRule[e.rule]) byRule[e.rule] = { count: 0, apps: new Set(), sources: new Set() };
+              byRule[e.rule].count++;
+              byRule[e.rule].apps.add(e.app);
+              byRule[e.rule].sources.add(e.src);
+            }
+
+            // Convert Sets to arrays for serialization
+            const ruleBreakdown = {};
+            for (const [rule, data] of Object.entries(byRule)) {
+              ruleBreakdown[rule] = {
+                count:   data.count,
+                apps:    [...data.apps],
+                sources: [...data.sources].slice(0, 10),
+              };
+            }
+
+            // Aggregate blocked traffic by application
+            const byApp = {};
+            for (const e of blockedEntries) {
+              byApp[e.app] = (byApp[e.app] || 0) + 1;
+            }
+
+            // Zone pair analysis
+            const zonePairs = {};
+            for (const e of blockedEntries) {
+              const key = `${e.fromZone} -> ${e.toZone}`;
+              zonePairs[key] = (zonePairs[key] || 0) + 1;
+            }
+
+            // Top blocked destinations
+            const dstCount = {};
+            for (const e of blockedEntries) {
+              dstCount[e.dst] = (dstCount[e.dst] || 0) + 1;
+            }
+            const topBlockedDst = Object.entries(dstCount)
+              .sort((a, b) => b[1] - a[1])
+              .slice(0, 10)
+              .map(([ip, count]) => ({ ip, count }));
+
+            const report = {
+              totalEntries:       logLines.length,
+              allowedCount:       allowedEntries.length,
+              blockedCount:       blockedEntries.length,
+              blockPercentage:    ((blockedEntries.length / logLines.length) * 100).toFixed(1) + '%',
+              blockedByRule:      ruleBreakdown,
+              blockedByApp:       byApp,
+              blockedByZonePair:  zonePairs,
+              topBlockedDst:      topBlockedDst,
+              sampleBlocked:      blockedEntries.slice(0, 5),
+              sampleAllowed:      allowedEntries.slice(0, 5),
+              validationResult:   blockedEntries.length > 0 && allowedEntries.length > 0
+                                    ? 'PASS - Both allowed and blocked traffic detected'
+                                    : 'FAIL - Expected mix of allowed and blocked traffic',
+            };
+
+            console.log(`Analysis complete.`);
+            console.log(`  Validation: ${report.validationResult}`);
+            console.log(`  Blocked: ${report.blockedCount} (${report.blockPercentage})`);
+            console.log(`  Rules triggered: ${Object.keys(ruleBreakdown).length}`);
+
+            return report;
+          }
+      position:
+        x: 0
+        y: 2
+      predecessors:
+        - generate_palo_alto_logs
+      conditions:
+        states:
+          generate_palo_alto_logs: OK
+
+  trigger: {}
+  schemaVersion: 3
