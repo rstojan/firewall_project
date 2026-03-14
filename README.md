@@ -24,10 +24,11 @@ Generated logs follow the **PAN-OS 10.x CSV syslog traffic log format** with ~10
 
 ### Workflow Structure
 
-| Task | Description |
-|------|-------------|
-| `generate_palo_alto_logs` | JavaScript action that creates 50 sample traffic log lines with a configurable mix of allow/deny actions |
-| `analyze_blocked_traffic` | JavaScript action that parses the generated logs and produces a validation report (blocked by rule, by app, by zone pair, top blocked destinations) |
+| Task | Order | Description |
+|------|-------|-------------|
+| `generate_palo_alto_logs` | 1 | JavaScript action that creates 50 sample traffic log lines with a configurable mix of allow/deny actions |
+| `ingest_logs_to_grail` | 2 | JavaScript action that sends each log line to the Dynatrace Log Ingest API v2 with structured `paloalto.*` attributes for easy DQL querying |
+| `analyze_blocked_traffic` | 3 | JavaScript action that parses the generated logs and produces a validation report (blocked by rule, by app, by zone pair, top blocked destinations) |
 
 ### Files
 
@@ -35,6 +36,7 @@ Generated logs follow the **PAN-OS 10.x CSV syslog traffic log format** with ~10
 |------|--------|---------|
 | `workflows/palo_alto_log_generator.yaml` | YAML template | Import via Dynatrace Workflows App UI |
 | `workflows/palo_alto_log_generator_api.json` | JSON API format | Import via Dynatrace Automation API |
+| `queries/palo_alto_firewall_logs.dql` | DQL | 15 ready-to-use queries for the Logs app, Notebooks, or Dashboards |
 
 ### How to Import
 
@@ -62,6 +64,46 @@ Edit these constants at the top of the `generate_palo_alto_logs` JavaScript acti
 | `BLOCK_RATIO` | 0.40 | Fraction of traffic that will be blocked (~40%) |
 | `SERIAL_NUMBER` | 001801000001 | Simulated device serial |
 | `DEVICE_NAME` | PA-5260-LAB | Simulated device hostname |
+
+### DQL Queries
+
+After the workflow runs, the logs are stored in Grail with structured `paloalto.*` attributes. Use the queries in `queries/palo_alto_firewall_logs.dql` to visualize the data. Key queries:
+
+**Quick validation — is traffic being blocked?**
+```
+fetch logs
+| filter log.source == "palo-alto-firewall"
+| fieldsAdd is_blocked = paloalto.action != "allow"
+| summarize total = count(),
+            allowed = countIf(NOT is_blocked),
+            blocked = countIf(is_blocked)
+| fieldsAdd allowed_pct = round(toDouble(allowed) / toDouble(total) * 100, decimals: 1),
+            blocked_pct = round(toDouble(blocked) / toDouble(total) * 100, decimals: 1)
+```
+
+**Blocked traffic by firewall rule:**
+```
+fetch logs
+| filter log.source == "palo-alto-firewall"
+| filter paloalto.action != "allow"
+| summarize block_count = count(),
+            unique_sources = countDistinct(paloalto.src),
+            unique_apps = countDistinct(paloalto.app),
+            by: { paloalto.rule }
+| sort block_count desc
+```
+
+**Time series for dashboards:**
+```
+fetch logs
+| filter log.source == "palo-alto-firewall"
+| fieldsAdd is_blocked = paloalto.action != "allow"
+| makeTimeseries allowed = countIf(NOT is_blocked),
+                 blocked = countIf(is_blocked),
+                 interval: 5m
+```
+
+See `queries/palo_alto_firewall_logs.dql` for all 15 queries including: blocked by application, zone pair analysis, high-risk port blocks, bandwidth analysis, top blocked sources/destinations, session end reasons, and raw CSV parsing fallback.
 
 ### Sample Output
 

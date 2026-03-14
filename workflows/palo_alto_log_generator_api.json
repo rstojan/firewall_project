@@ -16,6 +16,21 @@
       "position": { "x": 0, "y": 1 },
       "predecessors": []
     },
+    "ingest_logs_to_grail": {
+      "name": "ingest_logs_to_grail",
+      "description": "Sends each generated Palo Alto log line to the Dynatrace Log Ingest API v2 so that the logs are stored in Grail and can be queried with DQL in the Logs app or Notebooks.",
+      "action": "dynatrace.automations:run-javascript",
+      "input": {
+        "script": "import { execution } from '@dynatrace-sdk/automation-utils';\n\nconst LOG_INGEST_PATH = '/api/v2/logs/ingest';\nconst BATCH_SIZE = 20;\n\nexport default async function ({ execution_id }) {\n  const ex = await execution();\n  const genResult = await ex.result('generate_palo_alto_logs');\n  const logLines  = genResult.logLines;\n  const summary   = genResult.summary;\n\n  const logEntries = [];\n  for (const line of logLines) {\n    const f = line.split(',');\n    if (f.length < 50) continue;\n\n    logEntries.push({\n      'content':                    line,\n      'log.source':                 'palo-alto-firewall',\n      'log.tag':                    'firewall-test-data',\n      'severity':                   f[30] === 'allow' ? 'INFO' : 'WARN',\n      'paloalto.type':              'TRAFFIC',\n      'paloalto.serial':            f[2],\n      'paloalto.src':               f[7],\n      'paloalto.dst':               f[8],\n      'paloalto.rule':              f[11],\n      'paloalto.app':               f[14],\n      'paloalto.from_zone':         f[16],\n      'paloalto.to_zone':           f[17],\n      'paloalto.action':            f[30],\n      'paloalto.bytes_sent':        parseInt(f[32]) || 0,\n      'paloalto.bytes_received':    parseInt(f[33]) || 0,\n      'paloalto.session_end_reason': f[46],\n      'paloalto.device_name':       f[52],\n      'paloalto.dport':             parseInt(f[25]) || 0,\n      'paloalto.sport':             parseInt(f[24]) || 0,\n      'paloalto.proto':             parseInt(f[29]) || 0,\n    });\n  }\n\n  let ingested = 0;\n  for (let i = 0; i < logEntries.length; i += BATCH_SIZE) {\n    const batch = logEntries.slice(i, i + BATCH_SIZE);\n    const response = await fetch(LOG_INGEST_PATH, {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json; charset=utf-8' },\n      body: JSON.stringify(batch),\n    });\n\n    if (!response.ok) {\n      const body = await response.text();\n      console.error(`Batch ${Math.floor(i/BATCH_SIZE)+1} failed: ${response.status} - ${body}`);\n    } else {\n      ingested += batch.length;\n    }\n  }\n\n  console.log(`Ingested ${ingested}/${logEntries.length} log entries into Grail.`);\n\n  return {\n    totalIngested: ingested,\n    totalAttempted: logEntries.length,\n    allowedIngested: summary.allowed,\n    blockedIngested: summary.blocked,\n  };\n}"
+      },
+      "position": { "x": 0, "y": 2 },
+      "predecessors": ["generate_palo_alto_logs"],
+      "conditions": {
+        "states": {
+          "generate_palo_alto_logs": "OK"
+        }
+      }
+    },
     "analyze_blocked_traffic": {
       "name": "analyze_blocked_traffic",
       "description": "Parses the generated log lines and produces a breakdown of blocked traffic by source, destination, application, and deny rule to help validate that the expected traffic is being blocked.",
@@ -23,11 +38,11 @@
       "input": {
         "script": "import { execution } from '@dynatrace-sdk/automation-utils';\n\nexport default async function ({ execution_id }) {\n  const ex = await execution();\n  const genResult = await ex.result('generate_palo_alto_logs');\n  const logLines  = genResult.logLines;\n\n  const blockedEntries = [];\n  const allowedEntries = [];\n\n  for (const line of logLines) {\n    if (line.startsWith('#')) continue;\n    const f = line.split(',');\n    if (f.length < 50) continue;\n\n    const entry = {\n      timestamp:   f[1],\n      src:         f[7],\n      dst:         f[8],\n      rule:        f[11],\n      app:         f[14],\n      fromZone:    f[16],\n      toZone:      f[17],\n      action:      f[30],\n      bytesSent:   parseInt(f[32]) || 0,\n      bytesRecv:   parseInt(f[33]) || 0,\n      sessionEnd:  f[46],\n      deviceName:  f[52],\n    };\n\n    if (entry.action === 'allow') {\n      allowedEntries.push(entry);\n    } else {\n      blockedEntries.push(entry);\n    }\n  }\n\n  const byRule = {};\n  for (const e of blockedEntries) {\n    if (!byRule[e.rule]) byRule[e.rule] = { count: 0, apps: new Set(), sources: new Set() };\n    byRule[e.rule].count++;\n    byRule[e.rule].apps.add(e.app);\n    byRule[e.rule].sources.add(e.src);\n  }\n\n  const ruleBreakdown = {};\n  for (const [rule, data] of Object.entries(byRule)) {\n    ruleBreakdown[rule] = {\n      count:   data.count,\n      apps:    [...data.apps],\n      sources: [...data.sources].slice(0, 10),\n    };\n  }\n\n  const byApp = {};\n  for (const e of blockedEntries) { byApp[e.app] = (byApp[e.app] || 0) + 1; }\n\n  const zonePairs = {};\n  for (const e of blockedEntries) {\n    const key = `${e.fromZone} -> ${e.toZone}`;\n    zonePairs[key] = (zonePairs[key] || 0) + 1;\n  }\n\n  const dstCount = {};\n  for (const e of blockedEntries) { dstCount[e.dst] = (dstCount[e.dst] || 0) + 1; }\n  const topBlockedDst = Object.entries(dstCount)\n    .sort((a, b) => b[1] - a[1]).slice(0, 10)\n    .map(([ip, count]) => ({ ip, count }));\n\n  const report = {\n    totalEntries:       logLines.length,\n    allowedCount:       allowedEntries.length,\n    blockedCount:       blockedEntries.length,\n    blockPercentage:    ((blockedEntries.length / logLines.length) * 100).toFixed(1) + '%',\n    blockedByRule:      ruleBreakdown,\n    blockedByApp:       byApp,\n    blockedByZonePair:  zonePairs,\n    topBlockedDst:      topBlockedDst,\n    sampleBlocked:      blockedEntries.slice(0, 5),\n    sampleAllowed:      allowedEntries.slice(0, 5),\n    validationResult:   blockedEntries.length > 0 && allowedEntries.length > 0\n                          ? 'PASS - Both allowed and blocked traffic detected'\n                          : 'FAIL - Expected mix of allowed and blocked traffic',\n  };\n\n  console.log(`Analysis complete. Validation: ${report.validationResult}`);\n  return report;\n}"
       },
-      "position": { "x": 0, "y": 2 },
-      "predecessors": ["generate_palo_alto_logs"],
+      "position": { "x": 0, "y": 3 },
+      "predecessors": ["ingest_logs_to_grail"],
       "conditions": {
         "states": {
-          "generate_palo_alto_logs": "OK"
+          "ingest_logs_to_grail": "OK"
         }
       }
     }

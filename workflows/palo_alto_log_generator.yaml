@@ -338,6 +338,94 @@ workflow:
         y: 1
       predecessors: []
 
+    ingest_logs_to_grail:
+      name: ingest_logs_to_grail
+      description: >
+        Sends each generated Palo Alto log line to the Dynatrace Log Ingest
+        API v2 so that the logs are stored in Grail and can be queried with
+        DQL in the Logs app or Notebooks.
+      action: dynatrace.automations:run-javascript
+      input:
+        script: |-
+          import { execution } from '@dynatrace-sdk/automation-utils';
+
+          const LOG_INGEST_PATH = '/api/v2/logs/ingest';
+          const BATCH_SIZE = 20;
+
+          export default async function ({ execution_id }) {
+            const ex = await execution();
+            const genResult = await ex.result('generate_palo_alto_logs');
+            const logLines  = genResult.logLines;
+            const summary   = genResult.summary;
+
+            // Build structured log entries for the Dynatrace Log Ingest API.
+            // Each entry gets attributes that make DQL filtering easy without
+            // needing to re-parse the raw CSV every time.
+            const logEntries = [];
+            for (const line of logLines) {
+              const f = line.split(',');
+              if (f.length < 50) continue;
+
+              logEntries.push({
+                'content':                    line,
+                'log.source':                 'palo-alto-firewall',
+                'log.tag':                    'firewall-test-data',
+                'severity':                   f[30] === 'allow' ? 'INFO' : 'WARN',
+                'paloalto.type':              'TRAFFIC',
+                'paloalto.serial':            f[2],
+                'paloalto.src':               f[7],
+                'paloalto.dst':               f[8],
+                'paloalto.rule':              f[11],
+                'paloalto.app':               f[14],
+                'paloalto.from_zone':         f[16],
+                'paloalto.to_zone':           f[17],
+                'paloalto.action':            f[30],
+                'paloalto.bytes_sent':        parseInt(f[32]) || 0,
+                'paloalto.bytes_received':    parseInt(f[33]) || 0,
+                'paloalto.session_end_reason': f[46],
+                'paloalto.device_name':       f[52],
+                'paloalto.dport':             parseInt(f[25]) || 0,
+                'paloalto.sport':             parseInt(f[24]) || 0,
+                'paloalto.proto':             parseInt(f[29]) || 0,
+              });
+            }
+
+            // Send in batches to respect API payload limits
+            let ingested = 0;
+            for (let i = 0; i < logEntries.length; i += BATCH_SIZE) {
+              const batch = logEntries.slice(i, i + BATCH_SIZE);
+              const response = await fetch(LOG_INGEST_PATH, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json; charset=utf-8' },
+                body: JSON.stringify(batch),
+              });
+
+              if (!response.ok) {
+                const body = await response.text();
+                console.error(`Batch ${Math.floor(i/BATCH_SIZE)+1} failed: ${response.status} - ${body}`);
+              } else {
+                ingested += batch.length;
+              }
+            }
+
+            console.log(`Ingested ${ingested}/${logEntries.length} log entries into Grail.`);
+
+            return {
+              totalIngested: ingested,
+              totalAttempted: logEntries.length,
+              allowedIngested: summary.allowed,
+              blockedIngested: summary.blocked,
+            };
+          }
+      position:
+        x: 0
+        y: 2
+      predecessors:
+        - generate_palo_alto_logs
+      conditions:
+        states:
+          generate_palo_alto_logs: OK
+
     analyze_blocked_traffic:
       name: analyze_blocked_traffic
       description: >
@@ -451,12 +539,12 @@ workflow:
           }
       position:
         x: 0
-        y: 2
+        y: 3
       predecessors:
-        - generate_palo_alto_logs
+        - ingest_logs_to_grail
       conditions:
         states:
-          generate_palo_alto_logs: OK
+          ingest_logs_to_grail: OK
 
   trigger: {}
   schemaVersion: 3
