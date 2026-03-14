@@ -3,8 +3,17 @@
   "description": "Generates sample Palo Alto Networks PAN-OS traffic log entries in CSV syslog format. Produces a realistic mix of ALLOW and DENY/DROP/RESET actions across multiple source/destination pairs, ports, and applications so that downstream analytics can validate whether traffic is being blocked by the firewall. Approximately 60% of generated entries are allowed and 40% are blocked to simulate a realistic partial-block scenario.",
   "schemaVersion": 3,
   "isPrivate": false,
-  "triggerType": "Manual",
-  "trigger": {},
+  "triggerType": "Scheduler",
+  "trigger": {
+    "schedule": {
+      "trigger": {
+        "type": "cron",
+        "cron": "*/5 * * * *"
+      },
+      "timezone": "UTC",
+      "isActive": true
+    }
+  },
   "tasks": {
     "generate_palo_alto_logs": {
       "name": "generate_palo_alto_logs",

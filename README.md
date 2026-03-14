@@ -37,6 +37,8 @@ Generated logs follow the **PAN-OS 10.x CSV syslog traffic log format** with ~10
 | `workflows/palo_alto_log_generator.yaml` | YAML template | Import via Dynatrace Workflows App UI |
 | `workflows/palo_alto_log_generator_api.json` | JSON API format | Import via Dynatrace Automation API |
 | `queries/palo_alto_firewall_logs.dql` | DQL | 15 ready-to-use queries for the Logs app, Notebooks, or Dashboards |
+| `notebooks/palo_alto_firewall_logs.json` | Notebook JSON | Dynatrace Notebook with all 15 DQL queries and markdown descriptions |
+| `dashboards/palo_alto_firewall_logs.json` | Dashboard JSON | Dynatrace Dashboard visualizing queries 1-14 with charts and tables |
 
 ### How to Import
 
@@ -44,7 +46,7 @@ Generated logs follow the **PAN-OS 10.x CSV syslog traffic log format** with ~10
 1. Open your Dynatrace tenant
 2. Navigate to **Automations > Workflows**
 3. Click **Upload** and select `palo_alto_log_generator.yaml`
-4. Run the workflow manually (trigger is set to Manual)
+4. The workflow is scheduled to run every 5 minutes automatically (can also be triggered manually)
 
 **Via API (JSON):**
 ```bash
@@ -53,6 +55,18 @@ curl -X POST "https://{your-tenant}.apps.dynatrace.com/platform/automation/v1/wo
   -H "Content-Type: application/json" \
   -d @workflows/palo_alto_log_generator_api.json
 ```
+
+**Import Notebook:**
+1. Navigate to **Notebooks**
+2. Click **Upload** and select `notebooks/palo_alto_firewall_logs.json`
+
+**Import Dashboard:**
+1. Navigate to **Dashboards**
+2. Click **Upload** and select `dashboards/palo_alto_firewall_logs.json`
+
+### Schedule
+
+The workflow runs on a **5-minute cron schedule** (`*/5 * * * *` UTC) to continuously generate new log data. Each execution produces 50 log entries. To change the interval, edit the `trigger.schedule.trigger.cron` value in the workflow.
 
 ### Configuration
 

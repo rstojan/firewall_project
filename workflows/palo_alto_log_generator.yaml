@@ -553,5 +553,11 @@ workflow:
         states:
           ingest_logs_to_grail: OK
 
-  trigger: {}
+  trigger:
+    schedule:
+      trigger:
+        type: cron
+        cron: "*/5 * * * *"
+      timezone: "UTC"
+      isActive: true
   schemaVersion: 3
