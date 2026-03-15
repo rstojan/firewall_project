@@ -37,8 +37,8 @@ Generated logs follow the **PAN-OS 10.x CSV syslog traffic log format** with ~10
 | `workflows/palo_alto_log_generator.yaml` | YAML template | Import via Dynatrace Workflows App UI |
 | `workflows/palo_alto_log_generator_api.json` | JSON API format | Import via Dynatrace Automation API |
 | `queries/palo_alto_firewall_logs.dql` | DQL | 15 ready-to-use queries for the Logs app, Notebooks, or Dashboards |
-| `notebooks/palo_alto_firewall_logs.json` | Notebook JSON | Dynatrace Notebook with all 15 DQL queries and markdown descriptions |
-| `dashboards/palo_alto_firewall_logs.json` | Dashboard JSON | Dynatrace Dashboard visualizing queries 1-14 with charts and tables |
+| `notebooks/palo_alto_firewall_logs_notebook.json` | Notebook JSON | Dynatrace Notebook with all 15 DQL queries and markdown descriptions |
+| `dashboards/palo_alto_firewall_logs_dashboard.json` | Dashboard JSON | Dynatrace Dashboard visualizing queries 1-14 with charts and tables |
 
 ### How to Import
 
@@ -58,11 +58,11 @@ curl -X POST "https://{your-tenant}.apps.dynatrace.com/platform/automation/v1/wo
 
 **Import Notebook:**
 1. Navigate to **Notebooks**
-2. Click **Upload** and select `notebooks/palo_alto_firewall_logs.json`
+2. Click **Upload** and select `notebooks/palo_alto_firewall_logs_notebook.json`
 
 **Import Dashboard:**
 1. Navigate to **Dashboards**
-2. Click **Upload** and select `dashboards/palo_alto_firewall_logs.json`
+2. Click **Upload** and select `dashboards/palo_alto_firewall_logs_dashboard.json`
 
 ### Schedule
 
@@ -137,3 +137,9 @@ The `analyze_blocked_traffic` task returns a validation report:
   }
 }
 ```
+
+### Changelog
+
+- **Renamed files**: Dashboard and notebook JSON files now include `_dashboard` and `_notebook` suffixes for clarity (`palo_alto_firewall_logs_dashboard.json`, `palo_alto_firewall_logs_notebook.json`)
+- **Fixed notebook DQL inputs**: Corrected DQL query sections in the notebook by renaming the `query` key to `value` to match the expected Dynatrace notebook input schema
+- **Updated dashboard visualizations**: Improved chart configurations for sections 5, 6, 13, and 14 in the dashboard
