@@ -79,7 +79,7 @@
       "type": "data",
       "title": "5. Blocked by Firewall Rule",
       "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action != \"allow\"\n| summarize block_count = count(),\n            unique_sources = countDistinct(paloalto.src),\n            unique_apps = countDistinct(paloalto.app),\n            by: { paloalto.rule }\n| sort block_count desc",
-      "visualization": "barChart",
+      "visualization": "categoricalBarChart",
       "visualizationSettings": {
         "thresholds": [],
         "chartSettings": {
@@ -107,7 +107,7 @@
       "type": "data",
       "title": "6. Blocked by Application",
       "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action != \"allow\"\n| summarize block_count = count(),\n            deny_actions = collectDistinct(paloalto.action),\n            rules_triggered = collectDistinct(paloalto.rule),\n            by: { paloalto.app }\n| sort block_count desc",
-      "visualization": "barChart",
+      "visualization": "donutChart",
       "visualizationSettings": {
         "thresholds": [],
         "chartSettings": {
@@ -239,7 +239,7 @@
       "type": "data",
       "title": "13. Session End Reason Breakdown",
       "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| summarize count = count(),\n            by: { paloalto.session_end_reason, paloalto.action }\n| sort count desc",
-      "visualization": "barChart",
+      "visualization": "heatmap",
       "visualizationSettings": {
         "thresholds": [],
         "chartSettings": {
@@ -271,7 +271,7 @@
       "type": "data",
       "title": "14. Bandwidth by Application",
       "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action == \"allow\"\n| summarize total_bytes_sent = sum(paloalto.bytes_sent),\n            total_bytes_received = sum(paloalto.bytes_received),\n            session_count = count(),\n            by: { paloalto.app }\n| fieldsAdd total_bytes = total_bytes_sent + total_bytes_received\n| sort total_bytes desc",
-      "visualization": "barChart",
+      "visualization": "categoricalBarChart",
       "visualizationSettings": {
         "thresholds": [],
         "chartSettings": {
