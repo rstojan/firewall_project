@@ -1,0 +1,399 @@
+{
+  "version": "6",
+  "defaultTimeframe": {
+    "from": "now()-2h",
+    "to": "now()"
+  },
+  "defaultSegments": [],
+  "sections": [
+    {
+      "id": "a1000000-0000-0000-0000-000000000001",
+      "type": "markdown",
+      "markdown": "# Palo Alto Firewall Log Analysis\n\nThis notebook contains DQL queries for analyzing Palo Alto Networks PAN-OS traffic logs ingested by the **Palo Alto Firewall Log Generator** Dynatrace workflow.\n\nThe workflow generates a realistic mix of **~60% allowed** and **~40% blocked** traffic across multiple applications, network zones, and firewall rules. Logs are ingested into Grail with structured `paloalto.*` attributes.\n\n---"
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000010",
+      "type": "markdown",
+      "markdown": "## 1. All Palo Alto Firewall Logs — Overview\nShows all ingested firewall log entries with key parsed fields."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000011",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| fields timestamp,\n         paloalto.action,\n         paloalto.src,\n         paloalto.dst,\n         paloalto.app,\n         paloalto.rule,\n         paloalto.from_zone,\n         paloalto.to_zone,\n         paloalto.dport,\n         paloalto.bytes_sent,\n         paloalto.bytes_received,\n         paloalto.session_end_reason,\n         paloalto.device_name,\n         content\n| sort timestamp desc\n| limit 100"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000020",
+      "type": "markdown",
+      "markdown": "## 2. Blocked Traffic Only\nAll denied, dropped, and reset sessions — validates the firewall **IS** blocking traffic."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000021",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action != \"allow\"\n| fields timestamp,\n         paloalto.action,\n         paloalto.src,\n         paloalto.dst,\n         paloalto.app,\n         paloalto.rule,\n         paloalto.dport,\n         paloalto.from_zone,\n         paloalto.to_zone,\n         paloalto.session_end_reason\n| sort timestamp desc\n| limit 100"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000030",
+      "type": "markdown",
+      "markdown": "## 3. Allowed Traffic Only\nAll permitted sessions — validates the firewall is **NOT** blocking all traffic."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000031",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action == \"allow\"\n| fields timestamp,\n         paloalto.action,\n         paloalto.src,\n         paloalto.dst,\n         paloalto.app,\n         paloalto.rule,\n         paloalto.dport,\n         paloalto.bytes_sent,\n         paloalto.bytes_received\n| sort timestamp desc\n| limit 100"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000040",
+      "type": "markdown",
+      "markdown": "## 4. Traffic Summary — Allow vs Block\nSingle-glance validation: is the expected mix of allowed and blocked traffic present?"
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000041",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| fieldsAdd is_blocked = paloalto.action != \"allow\"\n| summarize total = count(),\n            allowed = countIf(NOT is_blocked),\n            blocked = countIf(is_blocked)\n| fieldsAdd allowed_pct = round(toDouble(allowed) / toDouble(total) * 100, decimals: 1),\n            blocked_pct = round(toDouble(blocked) / toDouble(total) * 100, decimals: 1)"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000050",
+      "type": "markdown",
+      "markdown": "## 5. Blocked Traffic by Firewall Rule\nWhich deny rules are firing most frequently?"
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000051",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action != \"allow\"\n| summarize block_count = count(),\n            unique_sources = countDistinct(paloalto.src),\n            unique_apps = countDistinct(paloalto.app),\n            by: { paloalto.rule }\n| sort block_count desc"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000060",
+      "type": "markdown",
+      "markdown": "## 6. Blocked Traffic by Application\nWhich applications are being denied by the firewall?"
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000061",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action != \"allow\"\n| summarize block_count = count(),\n            deny_actions = collectDistinct(paloalto.action),\n            rules_triggered = collectDistinct(paloalto.rule),\n            by: { paloalto.app }\n| sort block_count desc"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000070",
+      "type": "markdown",
+      "markdown": "## 7. Blocked Traffic by Action Type\nBreakdown of deny vs drop vs reset-both actions."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000071",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action != \"allow\"\n| summarize count = count(),\n            by: { paloalto.action }\n| sort count desc"
+        },
+        "visualization": "barChart",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {
+            "gapPolicy": "connect",
+            "categoricalBarChartSettings": {
+              "layout": "horizontal",
+              "categoryAxis": "paloalto.action",
+              "categoryAxisLabel": "Action",
+              "valueAxis": "count",
+              "valueAxisLabel": "Count"
+            }
+          },
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000080",
+      "type": "markdown",
+      "markdown": "## 8. Zone Pair Analysis\nTraffic flow between network zones — useful to see inbound vs outbound blocking patterns."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000081",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| summarize total = count(),\n            allowed = countIf(paloalto.action == \"allow\"),\n            blocked = countIf(paloalto.action != \"allow\"),\n            by: { paloalto.from_zone, paloalto.to_zone }\n| fieldsAdd block_rate = round(toDouble(blocked) / toDouble(total) * 100, decimals: 1)\n| sort block_rate desc"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000090",
+      "type": "markdown",
+      "markdown": "## 9. Top Blocked Destinations\nWhich internal IPs are being targeted most by blocked traffic?"
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000091",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action != \"allow\"\n| summarize block_count = count(),\n            attacking_sources = countDistinct(paloalto.src),\n            apps_targeted = collectDistinct(paloalto.app),\n            ports_targeted = collectDistinct(paloalto.dport),\n            by: { paloalto.dst }\n| sort block_count desc\n| limit 20"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000100",
+      "type": "markdown",
+      "markdown": "## 10. Top Blocked Sources\nWhich external IPs are being denied most frequently?"
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000101",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action != \"allow\"\n| summarize block_count = count(),\n            targets = countDistinct(paloalto.dst),\n            rules_hit = collectDistinct(paloalto.rule),\n            by: { paloalto.src }\n| sort block_count desc\n| limit 20"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000110",
+      "type": "markdown",
+      "markdown": "## 11. Blocked Traffic Over Time\nTime series showing blocked vs allowed traffic trend."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000111",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| fieldsAdd is_blocked = paloalto.action != \"allow\"\n| makeTimeseries allowed = countIf(NOT is_blocked),\n                 blocked = countIf(is_blocked),\n                 interval: 5m"
+        },
+        "visualization": "lineChart",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {
+            "gapPolicy": "connect",
+            "legend": {
+              "hidden": false,
+              "position": "auto"
+            }
+          },
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000120",
+      "type": "markdown",
+      "markdown": "## 12. High-Risk Port Blocks\nTraffic blocked on sensitive ports: RDP (3389), SQL (1433/3306), FTP (21), suspicious (4444)."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000121",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action != \"allow\"\n| filter paloalto.dport == 3389\n     OR paloalto.dport == 1433\n     OR paloalto.dport == 3306\n     OR paloalto.dport == 21\n     OR paloalto.dport == 4444\n| fields timestamp,\n         paloalto.src,\n         paloalto.dst,\n         paloalto.dport,\n         paloalto.app,\n         paloalto.action,\n         paloalto.rule,\n         paloalto.session_end_reason\n| sort timestamp desc"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000130",
+      "type": "markdown",
+      "markdown": "## 13. Session End Reason Breakdown\nWhy are sessions ending? `policy-deny` and `threat` indicate blocks; `tcp-fin`/`tcp-rst` are normal closures."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000131",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| summarize count = count(),\n            by: { paloalto.session_end_reason, paloalto.action }\n| sort count desc"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000140",
+      "type": "markdown",
+      "markdown": "## 14. Bandwidth Analysis\nBytes transferred by allowed connections grouped by application. Blocked sessions transfer 0 bytes."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000141",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| filter paloalto.action == \"allow\"\n| summarize total_bytes_sent = sum(paloalto.bytes_sent),\n            total_bytes_received = sum(paloalto.bytes_received),\n            session_count = count(),\n            by: { paloalto.app }\n| fieldsAdd total_bytes = total_bytes_sent + total_bytes_received\n| sort total_bytes desc"
+        },
+        "visualization": "barChart",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {
+            "gapPolicy": "connect",
+            "categoricalBarChartSettings": {
+              "layout": "horizontal",
+              "categoryAxis": "paloalto.app",
+              "categoryAxisLabel": "Application",
+              "valueAxis": "total_bytes",
+              "valueAxisLabel": "Total Bytes"
+            }
+          },
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000150",
+      "type": "markdown",
+      "markdown": "## 15. Raw CSV Log Parsing (Fallback)\nParses fields directly from the raw CSV content using the Dynatrace Pattern Language. Use this if logs were ingested without the structured `paloalto.*` attributes."
+    },
+    {
+      "id": "a1000000-0000-0000-0000-000000000151",
+      "type": "dql",
+      "state": {
+        "input": {
+          "query": "fetch logs\n| filter log.source == \"palo-alto-firewall\"\n| parse content, \"\n    LD*:future1 ','\n    LD:receive_time ','\n    LD:serial ','\n    LD:type ','\n    LD:subtype ','\n    LD*:future2 ','\n    LD:gen_time ','\n    LD:src_ip ','\n    LD:dst_ip ','\n    LD:nat_src ','\n    LD:nat_dst ','\n    LD:rule ','\n    LD*:src_user ','\n    LD*:dst_user ','\n    LD:app ','\n    LD:vsys ','\n    LD:from_zone ','\n    LD:to_zone ','\n    LD:inbound_if ','\n    LD:outbound_if ','\n    LD:logset ','\n    LD*:future3 ','\n    LD:session_id ','\n    LD:repeat_cnt ','\n    LD:src_port ','\n    LD:dst_port ','\n    LD:nat_src_port ','\n    LD:nat_dst_port ','\n    LD:flags ','\n    LD:protocol ','\n    LD:action ','\n    LD:total_bytes ','\n    LD:bytes_sent ','\n    LD:bytes_recv ','\n    LD:packets ','\n    LD:start_time ','\n    LD:elapsed ','\n    LD:category\n  \"\n| fields timestamp, action, src_ip, dst_ip, app, rule, from_zone, to_zone,\n         dst_port, bytes_sent, bytes_recv, category\n| sort timestamp desc\n| limit 50"
+        },
+        "visualization": "table",
+        "visualizationSettings": {
+          "thresholds": [],
+          "chartSettings": {},
+          "table": {
+            "enableLineWrap": true,
+            "hiddenColumns": [],
+            "lineWrapIds": []
+          }
+        }
+      }
+    }
+  ]
+}
